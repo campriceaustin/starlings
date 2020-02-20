@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang='en'>
+  <head>
+    <title>Starlings</title>
+    <meta content='text/html; charset=UTF-8' http-equiv='Content-Type'>
+    <meta content='en_US' http-equiv='Content-Language'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0, minimum-scale=1.0' />
+    <script src='./victor.js'></script>
+    <style type='text/css'>
+        * {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+  </head>
+  <body>
+    <div id='container'>
+    </div>
+    <script type='text/javascript'>
+        /**
+         * Represents a starling simulation. Responsible for setting up the canvas, creating and maintaining 
+         * the variable controls etc.
+         */
+        class Simulation {
+            /**
+             * @param {Flock} flock - the `Flock` object the simulation runs.
+             */
+            flock;
+
+            /**
+             * @param {Object} variables - a set of variables for controlling the parameters of the 
+             *   simulation. 
+             */
+            variables = {
+                sightDistance: { value: 300.0, label: 'Sight distance' },
+                maxSpeed: { value: 5.0, label: 'Max speed' },
+                minWallDistance: { value: 150.0, label: 'Min wall distance' },
+                wallAvoidanceDamping: { value: 0.1, label: 'Wall avoidance damping' },
+                separationDistance: { value: 10, label: 'Separation distance' },
+                cohesionDamping: { value: 0.02, label: 'Cohesion damping' },
+            };
+
+            /**
+             * Accepts a container `Element` and sets up the canvas and controls. Also initializes (but 
+             * doesn't start) the `Flock`.
+             * @param {Element} container - the container element to create the canvas and controls within.
+             *   This element's dimensions determine the dimensions of the canvas.
+             */
+            constructor({ container }) {
+                // Style the container.
+                container.style.position = 'relative';
+
+                // Create the canvas.
+                const canvas = document.createElement('canvas');
+                canvas.width = container.offsetWidth;
+                canvas.height = container.offsetHeight;
+                canvas.style.backgroundColor = Simulation.CANVAS_BACKGROUND_COLOR;
+                container.appendChild(canvas);
+
+                // Create the variable input container.
+                const variableInputContainer = document.createElement('div');
+                variableInputContainer.style.position = 'absolute';
+                variableInputContainer.style.top = 0;
+                variableInputContainer.style.right = 0;
+                variableInputContainer.style.width = Simulation.VARIABLE_CONTAINER_WIDTH;
+                container.appendChild(variableInputContainer);
+
+                // Create inputs for each variable.
+                for (const variableName of Object.keys(this.variables)) {
+                    const variable = this.variables[variableName];
+                    const label = document.createElement('label');
+                    label.textContent = variable.label;
+                    label.style.display = 'block';
+                    label.style.color = 'white';
+                    label.style.marginBottom = '10px';
+                    label.style.fontSize = '13px';
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.value = variable.value;
+                    input.style.display = 'block';
+                    input.style.width = '100%';
+                    input.style.background = 'rgba(255,255,255,0.2)';
+                    input.style.border = 'none';
+                    input.style.color = 'white';
+                    input.addEventListener('input', () => {
+                        variable.value = parseFloat(input.value) || 0;
+                    });
+                    label.appendChild(input);
+                    variableInputContainer.appendChild(label);
+                }
+
+                // Create the flock.
+                this.flock = new Flock({ canvas, variables: this.variables });
+            }
+
+            /**
+             * Starts the simulation. 
+             */
+            start() {
+                this.flock.start();
+            }
+        }
+
+        /**
+         * Class variable. Determines the canvas background color.  
+         */
+        Simulation.CANVAS_BACKGROUND_COLOR = '#010023';
+
+        /**
+         * Class variable. Determines the width of the variable container.
+         */
+        Simulation.VARIABLE_CONTAINER_WIDTH = 100;
+
+        /**
+         * Represents a flock of starlings. Responsible for creating the `Boids` and rendering at a 
+         * consistent FPS.
+         */
+        class Flock {
+            /**
+             * @param {Canvas} canvas - the `canvas` element (created by the `Simulation`).
+             */
+            canvas;
+
+            /**
+             * @param {Array[Boid]} flock - the collection of `Boids` that comprise the flock.
+             */
+            flock = [];
+
+            /**
+             * @param {Number} lastPaintAt - the time (in Unix ms) the last paint occurred.
+             */
+            lastPaintAt;
+            
+            /**
+             * Creates the flock.
+             * @param {Canvas} canvas - the canvas element.
+             * @param {Object} variables - variables for the simulation.
+             * @param {Number} numBoids - the number of `Boids` to create.
+             */
+            constructor({ canvas, variables, numBoids = 200 }) {
+                this.canvas = canvas;
+                for (let i = 0; i < numBoids; i++) {
+                    this.flock.push(new Boid({ 
+                        variables,
+                        // Position them randomly.
+                        x: Math.random() * canvas.width,
+                        y: Math.random() * canvas.height,
+                    }));
+                }
+            }
+
+            /**
+             * Start the flock. 
+             */
+            start() {
+                this.render();
+            }
+
+            /**
+             * Render a single frame. Called using `requestAnimationFrame` so may return early if we've
+             * already rendered recently.
+             */
+            render() {
+                // Paint ~60fps.
+                requestAnimationFrame(this.render.bind(this));
+                const elapsed = this.lastPaintAt ? Date.now() - this.lastPaintAt : 0;
+                if (this.lastPaintAt && elapsed < 16.66) return;
+                this.lastPaintAt = Date.now();
+
+                // Clear the canvas.
+                const context = this.canvas.getContext('2d');
+                context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Update the position of each `Boid`, and render them.
+                for (const boid of this.flock) {
+                    boid.updatePosition({ 
+                        flock: this.flock, 
+                        width: this.canvas.width, 
+                        height: this.canvas.height, 
+                        elapsed,
+                    });
+                    boid.render({ context });
+                }
+            }
+        }
+
+        /**
+         * Represents a single starling (boid). 
+         */
+        class Boid {
+            /**
+             * @param {Victor} position - the current position vector.
+             */
+            position;
+
+            /**
+             * @param {Victor} velocity - the current velocity vector.
+             */
+            velocity;
+
+            /**
+             * @param {Object} variables - a handle to the simulation variables.
+             */
+            variables;
+
+            /**
+             * Create the starling at the given {x,y} coordinates. 
+             */
+            constructor({ variables, x, y }) {
+                this.variables = variables;
+                this.position = new Victor(x, y);
+
+                // Set a random velocity.
+                const maxSpeed = this.variables.maxSpeed.value;
+                this.velocity = new Victor(
+                    Math.random() * maxSpeed - maxSpeed / 2.0, 
+                    Math.random() * maxSpeed - maxSpeed / 2.0
+                );
+            }
+
+            /**
+             * @returns {Boolean} true if this starling can see the given starling, otherwise false.
+             */
+            canSee(otherBoid) {
+                const dist = this.position.distance(otherBoid.position);
+                return dist > 0 && dist < this.variables.sightDistance.value;
+            }
+
+            /**
+             * @returns {Boolean} true if this starling is too close to the given starling, otherwise false.
+             */
+            isTooCloseTo(otherBoid) {
+                return this.position.distance(otherBoid.position) <= this.variables.separationDistance.value;
+            }
+
+            /**
+             * Updates the position of the starling. Calculates various forces to keep the starling:
+             * 
+             *   * Close to other starlings (cohesion)
+             *   * Not too close (separation)
+             *   * Heading in the same direction (alignment)
+             *   * Not hitting walls (avoid walls)
+             * 
+             * @param {Array[Boid]} flock - the flock.
+             * @param {Number} width - the width of the simulation area.
+             * @param {Number} height - the height of the simulation area.
+             * @param {Number} elapsed - the elapsed time since the last update.
+             */
+            updatePosition({ flock, width, height, elapsed }) {
+                // Calculate the various forces.
+                const cohesionForce = this.calculateCohesionForce({ flock, elapsed });
+                const separationForce = this.calculateSeparationForce({ flock, elapsed });
+                const alignmentForce = this.calculateAlignmentForce({ flock, elapsed });
+                const avoidWallsForce = this.calculateAvoidWallsForce({ width, height, elapsed });
+
+                // Add those forces to the current velocity.
+                this.velocity
+                    .add(cohesionForce)
+                    .add(separationForce)
+                    .add(alignmentForce)
+                    .add(avoidWallsForce);
+
+                // Cap the velocity.
+                const maxSpeed = this.variables.maxSpeed.value;
+                if (this.velocity.length() > maxSpeed) {
+                    this.velocity.normalize();
+                    this.velocity.multiplyScalar(maxSpeed);
+                }
+
+                // Update the position.
+                this.position.add(this.velocity);
+            }
+
+            /**
+             * @param {Array[Boid]} flock - the flock.
+             * @param {Number} elapsed - the elapsed time since the last update.
+             * @returns {Victor} a force required to keep this starling close to other starlings. 
+             */
+            calculateCohesionForce({ flock, elapsed }) {
+                // Calculate the perceived center of the flock.
+                let count = 0;
+                const perceivedFlockCenter = new Victor();
+                for (const boid of flock) {
+                    if (boid === this) continue;
+                    if (this.canSee(boid)) {
+                        perceivedFlockCenter.add(boid.position);
+                        count++;
+                    }
+                }
+                if (count > 0) {
+                    perceivedFlockCenter.divideScalar(count);
+                    return perceivedFlockCenter
+                        .subtract(this.position)
+                        .multiplyScalar(elapsed / 1000.0)
+                        .multiplyScalar(this.variables.cohesionDamping.value);
+                } else {
+                    return perceivedFlockCenter;
+                }
+            }
+
+            /**
+             * @param {Array[Boid]} flock - the flock.
+             * @param {Number} elapsed - the elapsed time since the last update.
+             * @returns {Victor} a force required to keep this starling far enough away from other starlings. 
+             */
+            calculateSeparationForce({ flock, elapsed }) {
+                const separation = new Victor();
+                this.closestDistance = undefined; // Track the closest distance (we use it for colors).
+                for (const boid of flock) {
+                    if (boid === this) continue;
+
+                    // If we're too close to this starling, add a separation amount to our vector.
+                    if (this.canSee(boid) && this.isTooCloseTo(boid)) {
+                        const distanceVec = boid.position.clone().subtract(this.position);
+                        separation.subtract(distanceVec);
+                    }
+
+                    // Track the closest distance.
+                    const distance = this.position.distance(boid.position)
+                    if (this.closestDistance === undefined || distance < this.closestDistance) {
+                        this.closestDistance = distance;
+                    }
+                }
+                return separation.multiplyScalar(elapsed / 1000.0);
+            }
+
+            /**
+             * @param {Array[Boid]} flock - the flock.
+             * @param {Number} elapsed - the elapsed time since the last update.
+             * @returns {Victor} a force required to keep this starling heading in the same direction as the 
+             *   other starlings.
+             */
+            calculateAlignmentForce({ flock, elapsed }) {
+                // Calculate the perceived velocity of the flock.
+                let count = 0;
+                const perceivedFlockVelocity = new Victor();
+                for (const boid of flock) {
+                    if (boid === this) continue;
+                    if (this.canSee(boid)) {
+                        perceivedFlockVelocity.add(boid.velocity);
+                        count++;
+                    }
+                }
+                if (count > 0) {
+                    perceivedFlockVelocity.divideScalar(count);
+                    return perceivedFlockVelocity.multiplyScalar(elapsed / 1000.0);
+                } else {
+                    return perceivedFlockVelocity;
+                }
+            }
+
+            /**
+             * @param {Number} width - the width of the simulation area.
+             * @param {Number} height - the height of the simulation area.
+             * @param {Number} elapsed - the elapsed time since the last update.
+             * @returns {Victor} a force required to keep this starling from hitting the walls.
+             */
+            calculateAvoidWallsForce({ width, height, elapsed }) {
+                const avoidWalls = new Victor();
+
+                const minWallDistance = this.variables.minWallDistance.value;
+
+                const minX = minWallDistance;
+                const maxX = width - minWallDistance;
+
+                const minY = minWallDistance;
+                const maxY = height - minWallDistance;
+
+                if (this.position.x < minX) {
+                    const overlapX = minX - this.position.x;
+                    avoidWalls.x = overlapX;
+                } else if (this.position.x > maxX) {
+                    const overlapX = maxX - this.position.x;
+                    avoidWalls.x = overlapX;
+                }
+
+                if (this.position.y < minY) {
+                    const overlapY = minY - this.position.y;
+                    avoidWalls.y = overlapY;
+                } else if (this.position.y > maxY) {
+                    const overlapY = maxY - this.position.y;
+                    avoidWalls.y = overlapY;
+                }
+
+                avoidWalls.multiplyScalar(elapsed / 1000.0);
+                avoidWalls.multiplyScalar(this.variables.wallAvoidanceDamping.value);
+
+                return avoidWalls;
+            }
+
+            /**
+             * @param {Context2D} context - the context to render upon.
+             */
+            render({ context }) {
+                const normVel = 1 - Math.min(1, this.closestDistance / 10);
+                context.fillStyle = `hsl(${360 * normVel}, 100%, 50%)`;
+                context.fillRect(this.position.x, this.position.y, 3, 3);
+            }
+        }
+
+        const container = document.getElementById('container');
+        const simulation = new Simulation({ container });
+        simulation.start();
+    </script>
+  </body>
+</html>
